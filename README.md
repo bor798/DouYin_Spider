@@ -115,6 +115,7 @@ python get_cookie.py
 每次运行 `main.py` 等脚本时都会在后台自动刷新 Cookie，无需任何操作。
 
 - 换号 / 登录失效：`python get_cookie.py --login`
+- 平时用 **Safari** 登录抖音（macOS）：`pip install browser-cookie3`，在 `.env` 里设置 `DY_AUTO_COOKIE=safari`（或 `python get_cookie.py --source safari`）。第一次需要给运行脚本的终端开权限：系统设置 → 隐私与安全性 → 完全磁盘访问权限 → 打开"终端"（或 iTerm / PyCharm / VS Code），然后重启终端。之后只要 Safari 里抖音保持登录，每次运行都会自动读取
 - 想直接用日常浏览器里的登录：`pip install browser-cookie3` 后 `python get_cookie.py --source chrome`（也支持 `edge` / `firefox`；Windows 新版 Chrome/Edge 可能因加密读不出，改用默认方式即可）
 
 不想用自动获取的话，按下面的方法手动配置即可。

@@ -11,8 +11,10 @@
    - 之后：后台无界面打开抖音，自动读取最新 Cookie（含 UIFID）写回 .env。
    只要这个专用浏览器的登录没过期，就再也不用手动操作。
 
-2. chrome / edge / firefox / brave / chromium
+2. safari / chrome / edge / firefox / brave / chromium
    直接读取你日常浏览器里已登录的抖音 Cookie（需要 pip install browser-cookie3）。
+   Safari（macOS）不加密，但需要给运行脚本的终端开"完全磁盘访问权限"：
+   系统设置 → 隐私与安全性 → 完全磁盘访问权限 → 打开"终端"（或 iTerm / PyCharm / VS Code）。
    注意：Windows 上新版 Chrome/Edge 启用了 App-Bound 加密，第三方程序经常读不出来，
    这种情况请改用 profile 模式或 firefox。
 
@@ -33,7 +35,7 @@ LOGIN_KEYS = ("sessionid", "sessionid_ss")
 # 换了账号后这些凭证与旧会话绑定，继续用会让创作者/私信接口失败
 SESSION_BOUND_KEYS = ("DY_TICKET", "DY_TS_SIGN", "DY_CLIENT_CERT",
                       "DY_PRIVATE_KEY", "DY_DTRAIT_BLOB", "DY_SESSION_DTRAIT")
-BROWSER_SOURCES = ("chrome", "edge", "firefox", "brave", "chromium")
+BROWSER_SOURCES = ("safari", "chrome", "edge", "firefox", "brave", "chromium")
 
 
 class CookieFetchError(RuntimeError):
@@ -162,7 +164,17 @@ def fetch_from_browser(source: str) -> str:
         raise CookieFetchError(f"不支持的浏览器：{source}")
     try:
         jar = loader(domain_name="douyin.com")
+    except PermissionError as err:
+        if source == "safari":
+            raise CookieFetchError(
+                f"没有权限读取 Safari Cookie：{err}\n"
+                "请打开 系统设置 → 隐私与安全性 → 完全磁盘访问权限，"
+                "把你运行脚本用的终端（终端 / iTerm / PyCharm / VS Code）打开，然后重启该终端再试。"
+            )
+        raise CookieFetchError(f"读取 {source} Cookie 失败：{err}")
     except Exception as err:
+        if source == "safari":
+            raise CookieFetchError(f"读取 Safari Cookie 失败：{err}（Safari 只在 macOS 上可用）")
         raise CookieFetchError(
             f"读取 {source} Cookie 失败：{err}\n"
             "（Windows 新版 Chrome/Edge 常见，请关闭该浏览器后重试，或改用 DY_AUTO_COOKIE=profile）"

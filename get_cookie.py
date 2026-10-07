@@ -4,7 +4,7 @@
 
     python get_cookie.py                 # 专用浏览器：首次弹窗登录，之后全自动
     python get_cookie.py --login         # 换号 / 登录失效时，强制弹窗重新登录
-    python get_cookie.py --source chrome # 直接读取日常 Chrome 里的登录（也可 edge / firefox）
+    python get_cookie.py --source safari # 直接读取 Safari 里的登录（也可 chrome / edge / firefox）
 """
 import argparse
 import sys
@@ -15,7 +15,7 @@ from utils.browser_cookie import CookieFetchError, refresh_env_cookie
 def main():
     parser = argparse.ArgumentParser(description="自动获取抖音登录 Cookie 并写入 .env")
     parser.add_argument("--source", default="profile",
-                        help="profile(默认) / chrome / edge / firefox / brave / chromium")
+                        help="profile(默认) / safari / chrome / edge / firefox / brave / chromium")
     parser.add_argument("--login", action="store_true", help="强制弹出浏览器重新登录")
     parser.add_argument("--env", default=None, help=".env 路径，默认项目根目录")
     args = parser.parse_args()
