@@ -4,9 +4,28 @@ from dotenv import load_dotenv
 
 dy_auth = None
 dy_live_auth = None
+
+
+def _auto_refresh_cookie(env_path=None):
+    """DY_AUTO_COOKIE 开启时，启动前自动从浏览器获取最新登录 Cookie 写入 .env。"""
+    source = (os.getenv('DY_AUTO_COOKIE') or '').strip().lower()
+    if source in ('', '0', 'false', 'no', 'off'):
+        return
+    from loguru import logger
+    from utils.browser_cookie import CookieFetchError, refresh_env_cookie
+    try:
+        refresh_env_cookie(source, env_path=env_path)
+    except CookieFetchError as err:
+        if os.getenv('DY_COOKIES'):
+            logger.warning(f"自动获取 Cookie 失败，继续使用 .env 中已有的 DY_COOKIES：{err}")
+        else:
+            raise
+
+
 def load_env(env_path=None, *, bootstrap_creator=False, proxies=None):
     global dy_auth, dy_live_auth
     load_dotenv(dotenv_path=env_path, override=bool(env_path))
+    _auto_refresh_cookie(env_path)
     cookies_dy = os.getenv('DY_COOKIES')
     cookies_live = os.getenv('DY_LIVE_COOKIES')
     from builder.auth import DouyinAuth

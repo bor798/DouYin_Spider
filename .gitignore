@@ -51,3 +51,6 @@ datas
 *.network-response
 /im_snapshot.txt
 /send_*.txt
+
+# 自动获取 Cookie 的专用浏览器登录数据，勿入库
+/.dy_browser_profile/

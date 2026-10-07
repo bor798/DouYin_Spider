@@ -102,6 +102,23 @@ Sponsored by [Vectrust](https://api.openai-next.com) @ OpenDev Org & NextRouter 
 pip install -r requirements.txt
 ```
 
+### 🍪自动获取 Cookie（推荐，免手动复制）
+
+```
+pip install playwright
+playwright install chromium
+python get_cookie.py
+```
+
+第一次运行会弹出一个浏览器窗口，登录抖音即可；Cookie（含 `UIFID`）会自动写入 `.env`。
+登录状态保存在项目下的 `.dy_browser_profile/`，之后在 `.env` 里设置 `DY_AUTO_COOKIE=profile`，
+每次运行 `main.py` 等脚本时都会在后台自动刷新 Cookie，无需任何操作。
+
+- 换号 / 登录失效：`python get_cookie.py --login`
+- 想直接用日常浏览器里的登录：`pip install browser-cookie3` 后 `python get_cookie.py --source chrome`（也支持 `edge` / `firefox`；Windows 新版 Chrome/Edge 可能因加密读不出，改用默认方式即可）
+
+不想用自动获取的话，按下面的方法手动配置即可。
+
 ### 🎨配置文件
 
 现在推荐只配置 `DY_COOKIES`：主站 `Auth` 会被作品接口、直播 REST/WebSocket 和创作者中心共同复用。

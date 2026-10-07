@@ -25,3 +25,8 @@ curl_cffi
 # 所以这里显式钉住版本，装完请确认 protobuf 没被降下去。
 protobuf>=5.27
 blackboxprotobuf
+
+# 自动获取登录 Cookie（utils/browser_cookie.py），装完还需执行一次：playwright install chromium
+playwright
+# 可选：DY_AUTO_COOKIE=chrome/edge/firefox 时读取日常浏览器 Cookie
+# browser-cookie3
