@@ -125,20 +125,27 @@ MEDIA_HEADERS = {'Referer': 'https://www.douyin.com/'}
 
 
 def download_media(path, name, url, type):
+    target = f"{path}/{name}.{'jpg' if type == 'image' else 'mp4'}"
+    # 断点续爬：已经完整下载过的文件直接跳过
+    if os.path.exists(target) and os.path.getsize(target) > 0:
+        return
+    # 先写 .part，下完再改名：中途中断不会留下"看起来已下载"的残缺文件
+    part = target + '.part'
     if type == 'image':
-        res = requests.get(url, headers=MEDIA_HEADERS)
+        res = requests.get(url, headers=MEDIA_HEADERS, timeout=60)
         res.raise_for_status()
-        with open(path + '/' + name + '.jpg', mode="wb") as f:
+        with open(part, mode="wb") as f:
             f.write(res.content)
     elif type == 'video':
-        res = requests.get(url, headers=MEDIA_HEADERS, stream=True)
+        res = requests.get(url, headers=MEDIA_HEADERS, stream=True, timeout=60)
         res.raise_for_status()
-        size = 0
         chunk_size = 1024 * 1024
-        with open(path + '/' + name + '.mp4', mode="wb") as f:
+        with open(part, mode="wb") as f:
             for data in res.iter_content(chunk_size=chunk_size):
                 f.write(data)
-                size += len(data)
+    else:
+        return
+    os.replace(part, target)
 
 
 def save_wrok_detail(work, path):

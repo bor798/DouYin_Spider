@@ -1,27 +1,50 @@
 # coding=utf-8
 import json
 import os
-import random
-import time
+import sys
 from loguru import logger
 
 from dy_apis.douyin_api import DouyinAPI, parse_aweme_id
+from utils.checkpoint import Checkpoint, make_key
 from utils.common_util import init
 from utils.data_util import handle_work_info, download_work, save_to_xlsx, handle_comment_info, save_comments_to_xlsx
+from utils.safe_guard import RiskStop, DailyLimitReached, today_count
 
 
 def safe_download_work(work_info, path, save_choice):
-    # download_work 自带重试，重试后仍失败则跳过该作品，避免中断整批爬取
+    # download_work 自带重试，重试后仍失败则跳过该作品，避免中断整批爬取；
+    # 已下载过的文件会自动跳过（断点续爬）
     try:
         download_work(work_info, path, save_choice)
     except Exception as e:
         logger.error(f'作品 {work_info["work_id"]} 下载失败，已跳过: {e}')
 
 
+def _excel_path(base_path, name):
+    return os.path.abspath(os.path.join(base_path['excel'], f'{name}.xlsx'))
+
+
+def _save_partial(save_fn, rows, base_path, name):
+    """被迫中断时，把已经爬到的数据先存一份，文件名带"_未完成"。"""
+    if rows:
+        save_fn(rows, _excel_path(base_path, f'{name}_未完成'))
+
+
 class Data_Spider():
+    """
+    所有爬取方法都带「断点续爬」：
+      - 进度实时保存在 datas/checkpoints/，任务完成后自动删除；
+      - 中途因风控 / 每日额度 / Ctrl+C / 断网停止时，已爬到的数据会先存成 "xxx_未完成.xlsx"；
+      - 再次运行同样的代码，会从断点继续，已下载的视频图片也会自动跳过。
+    请求限速、风控退避由 utils/safe_guard.py 在底层统一处理，这里不用管。
+    """
+
     def __init__(self):
         self.douyin_apis = DouyinAPI()
 
+    # ------------------------------------------------------------------
+    # 作品
+    # ------------------------------------------------------------------
     def spider_work(self, auth, work_url: str, proxies=None):
         """
         爬取一个作品的信息
@@ -48,17 +71,37 @@ class Data_Spider():
         """
         if (save_choice == 'all' or save_choice == 'excel') and excel_name == '':
             raise ValueError('excel_name 不能为空')
-        work_list = []
-        for work_url in works:
-            work_info = self.spider_work(auth, work_url)
-            work_list.append(work_info)
-        for work_info in work_list:
-            if save_choice == 'all' or 'media' in save_choice:
-                safe_download_work(work_info, base_path['media'], save_choice)
+        ckpt = Checkpoint('works', make_key(excel_name or 'works', *works))
+        state = ckpt.load() or {'done': {}}
+        state['failed'] = []  # 上次失败的，这次重新试一遍
+        done = state['done']
+        try:
+            for i, work_url in enumerate(works, 1):
+                if work_url in done or work_url in state['failed']:
+                    continue
+                try:
+                    work_info = self.spider_work(auth, work_url)
+                except RiskStop:
+                    raise
+                except Exception as e:
+                    logger.error(f'作品 {work_url} 爬取失败，已跳过: {e}')
+                    state['failed'].append(work_url)
+                    ckpt.save(state)
+                    continue
+                if save_choice == 'all' or 'media' in save_choice:
+                    safe_download_work(work_info, base_path['media'], save_choice)
+                done[work_url] = work_info
+                ckpt.save(state)
+                logger.info(f'进度 {i}/{len(works)}')
+        except (RiskStop, KeyboardInterrupt):
+            if save_choice == 'all' or save_choice == 'excel':
+                _save_partial(save_to_xlsx, [done[u] for u in works if u in done], base_path, excel_name)
+            raise
+        work_list = [done[u] for u in works if u in done]
         if save_choice == 'all' or save_choice == 'excel':
-            file_path = os.path.abspath(os.path.join(base_path['excel'], f'{excel_name}.xlsx'))
-            save_to_xlsx(work_list, file_path)
-
+            save_to_xlsx(work_list, _excel_path(base_path, excel_name))
+        ckpt.clear()
+        return work_list
 
     def spider_user_all_work(self, auth, user_url: str, base_path: dict, save_choice: str, excel_name: str = '', proxies=None):
         """
@@ -71,23 +114,38 @@ class Data_Spider():
         :param proxies: 代理
         :return:
         """
-        user_info = self.douyin_apis.get_user_info(auth, user_url)
-        work_list = self.douyin_apis.get_user_all_work_info(auth, user_url)
-        work_info_list = []
-        logger.info(f'用户 {user_url} 作品数量: {len(work_list)}')
+        sec_uid = user_url.split('/')[-1].split('?')[0]
         if save_choice == 'all' or save_choice == 'excel':
-            excel_name = user_url.split('/')[-1].split('?')[0]
-
-        for work_info in work_list:
-            work_info['author'].update(user_info['user'])
-            work_info = handle_work_info(work_info)
-            work_info_list.append(work_info)
-            logger.info(f'爬取作品信息 {work_info["work_url"]}')
-            if save_choice == 'all' or 'media' in save_choice:
-                safe_download_work(work_info, base_path['media'], save_choice)
+            excel_name = sec_uid
+        ckpt = Checkpoint('user', make_key(sec_uid))
+        state = ckpt.load() or {'cursor': '0', 'works': [], 'finished': False}
+        work_info_list = state['works']
+        try:
+            user_info = self.douyin_apis.get_user_info(auth, user_url)
+            while not state['finished']:
+                res_json = self.douyin_apis.get_user_work_info(auth, user_url, state['cursor'])
+                if 'aweme_list' not in res_json:
+                    break
+                for work in res_json['aweme_list'] or []:
+                    work['author'].update(user_info['user'])
+                    work_info = handle_work_info(work)
+                    work_info_list.append(work_info)
+                    logger.info(f'爬取作品信息 {work_info["work_url"]}')
+                    if save_choice == 'all' or 'media' in save_choice:
+                        safe_download_work(work_info, base_path['media'], save_choice)
+                state['cursor'] = str(res_json.get('max_cursor', '0'))
+                state['finished'] = res_json.get('has_more') != 1
+                ckpt.save(state)
+                logger.info(f'用户 {sec_uid}：已爬 {len(work_info_list)} 个作品')
+        except (RiskStop, KeyboardInterrupt):
+            if save_choice == 'all' or save_choice == 'excel':
+                _save_partial(save_to_xlsx, work_info_list, base_path, excel_name)
+            raise
+        logger.info(f'用户 {user_url} 作品数量: {len(work_info_list)}')
         if save_choice == 'all' or save_choice == 'excel':
-            file_path = os.path.abspath(os.path.join(base_path['excel'], f'{excel_name}.xlsx'))
-            save_to_xlsx(work_info_list, file_path)
+            save_to_xlsx(work_info_list, _excel_path(base_path, excel_name))
+        ckpt.clear()
+        return work_info_list
 
     def spider_some_search_work(self, auth, query: str, require_num: int, base_path: dict, save_choice: str,  sort_type: str, publish_time: str, filter_duration="", search_range="", content_type="",   excel_name: str = '', proxies=None):
         """
@@ -103,25 +161,50 @@ class Data_Spider():
             :param content_type: 内容形式 0 不限, 1 视频, 2 图文
             :param excel_name: excel文件名
         """
-        work_info_list = []
-        work_list = self.douyin_apis.search_some_general_work(auth, query, require_num, sort_type, publish_time, filter_duration, search_range, content_type)
-        logger.info(f'搜索关键词 {query} 作品数量: {len(work_list)}')
         if save_choice == 'all' or save_choice == 'excel':
             excel_name = query
-        for work_info in work_list:
-            logger.info(json.dumps(work_info))
-            logger.info(f'爬取作品信息 https://www.douyin.com/video/{work_info["aweme_info"]["aweme_id"]}')
-            work_info = handle_work_info(work_info['aweme_info'])
-            work_info_list.append(work_info)
-            if save_choice == 'all' or 'media' in save_choice:
-                safe_download_work(work_info, base_path['media'], save_choice)
+        ckpt = Checkpoint('search', make_key(query, require_num, sort_type, publish_time,
+                                             filter_duration, search_range, content_type))
+        state = ckpt.load() or {'offset': '0', 'works': [], 'seen': [], 'finished': False}
+        work_info_list = state['works']
+        seen = set(state['seen'])
+        try:
+            while not state['finished'] and len(work_info_list) < require_num:
+                res_json = self.douyin_apis.search_general_work(
+                    auth, query, sort_type, publish_time, state['offset'],
+                    filter_duration, search_range, content_type)
+                data = res_json.get('data') or []
+                for item in data:
+                    aweme = item.get('aweme_info')
+                    if not aweme or aweme.get('aweme_id') in seen or len(work_info_list) >= require_num:
+                        continue
+                    seen.add(aweme.get('aweme_id'))
+                    logger.info(f'爬取作品信息 https://www.douyin.com/video/{aweme["aweme_id"]}')
+                    work_info = handle_work_info(aweme)
+                    work_info_list.append(work_info)
+                    if save_choice == 'all' or 'media' in save_choice:
+                        safe_download_work(work_info, base_path['media'], save_choice)
+                state['offset'] = str(int(state['offset']) + len(data))
+                state['finished'] = res_json.get('has_more') != 1 or not data
+                state['seen'] = list(seen)
+                ckpt.save(state)
+                logger.info(f'搜索 {query}：已爬 {len(work_info_list)}/{require_num}')
+        except (RiskStop, KeyboardInterrupt):
+            if save_choice == 'all' or save_choice == 'excel':
+                _save_partial(save_to_xlsx, work_info_list, base_path, excel_name)
+            raise
+        logger.info(f'搜索关键词 {query} 作品数量: {len(work_info_list)}')
         if save_choice == 'all' or save_choice == 'excel':
-            file_path = os.path.abspath(os.path.join(base_path['excel'], f'{excel_name}.xlsx'))
-            save_to_xlsx(work_info_list, file_path)
+            save_to_xlsx(work_info_list, _excel_path(base_path, excel_name))
+        ckpt.clear()
+        return work_info_list
 
+    # ------------------------------------------------------------------
+    # 评论
+    # ------------------------------------------------------------------
     def spider_work_comments(self, auth, work_url: str, base_path: dict, max_comments: int = 0,
                               with_reply: bool = True, max_reply_per_comment: int = 0,
-                              excel_name: str = '', sleep_range=(1.0, 2.5)):
+                              excel_name: str = '', sleep_range=None):
         """
         爬取一个作品的评论（一级评论 + 楼中楼回复），保存到 excel
         :param auth: 用户认证信息
@@ -131,48 +214,46 @@ class Data_Spider():
         :param with_reply: 是否爬取二级回复（楼中楼）
         :param max_reply_per_comment: 每条一级评论最多爬多少条回复，0 表示全部
         :param excel_name: excel 文件名，留空则用 "评论_作品id"
-        :param sleep_range: 每次请求之间随机等待的秒数，太快容易触发风控
+        :param sleep_range: 已废弃，限速统一由 .env 里的防风控参数控制
         :return: 整理后的评论列表
         """
         aweme_id, _ = parse_aweme_id(work_url)
         excel_name = excel_name or f'评论_{aweme_id}'
-        rows = []
-        out_count = 0
-        cursor = '0'
-
-        def nap():
-            time.sleep(random.uniform(*sleep_range))
-
-        while True:
-            res = self.douyin_apis.get_work_out_comment(auth, work_url, cursor)
-            comments = res.get('comments') or []
-            if not comments:
-                break
-            for comment in comments:
-                if max_comments and out_count >= max_comments:
-                    break
-                out_count += 1
-                rows.append(handle_comment_info(comment, level=1))
-                reply_total = comment.get('reply_comment_total') or 0
-                if with_reply and reply_total > 0:
-                    rows.extend(self._spider_replies(auth, comment, max_reply_per_comment, nap))
-            logger.info(f'作品 {aweme_id}：已爬一级评论 {out_count} 条，共 {len(rows)} 条（含回复）')
-            if (max_comments and out_count >= max_comments) or res.get('has_more') != 1:
-                break
-            cursor = str(res.get('cursor', '0'))
-            nap()
-
-        file_path = os.path.abspath(os.path.join(base_path['excel'], f'{excel_name}.xlsx'))
-        save_comments_to_xlsx(rows, file_path)
+        ckpt = Checkpoint('comments', make_key(aweme_id, max_comments, with_reply, max_reply_per_comment))
+        state = ckpt.load() or {'cursor': '0', 'out_count': 0, 'rows': [], 'finished': False}
+        rows = state['rows']
+        try:
+            while not state['finished']:
+                res = self.douyin_apis.get_work_out_comment(auth, work_url, state['cursor'])
+                comments = res.get('comments') or []
+                page_rows = []
+                for comment in comments:
+                    if max_comments and state['out_count'] >= max_comments:
+                        break
+                    state['out_count'] += 1
+                    page_rows.append(handle_comment_info(comment, level=1))
+                    if with_reply and (comment.get('reply_comment_total') or 0) > 0:
+                        page_rows.extend(self._spider_replies(auth, comment, max_reply_per_comment))
+                # 一整页（含它的回复）都爬完才记进度，中断后重爬这一页，不会重复也不会漏
+                rows.extend(page_rows)
+                state['cursor'] = str(res.get('cursor', '0'))
+                state['finished'] = (not comments or res.get('has_more') != 1
+                                     or bool(max_comments and state['out_count'] >= max_comments))
+                ckpt.save(state)
+                logger.info(f'作品 {aweme_id}：已爬一级评论 {state["out_count"]} 条，共 {len(rows)} 条（含回复）')
+        except (RiskStop, KeyboardInterrupt):
+            _save_partial(save_comments_to_xlsx, rows, base_path, excel_name)
+            raise
+        save_comments_to_xlsx(rows, _excel_path(base_path, excel_name))
+        ckpt.clear()
         return rows
 
-    def _spider_replies(self, auth, comment: dict, max_reply: int, nap):
-        """爬一条一级评论下的二级回复；单条失败只跳过，不中断整体。"""
+    def _spider_replies(self, auth, comment: dict, max_reply: int):
+        """爬一条一级评论下的二级回复；单条失败只跳过，不中断整体（风控停止除外）。"""
         replies = []
         cursor = '0'
         try:
             while True:
-                nap()
                 res = self.douyin_apis.get_work_inner_comment(auth, comment, cursor, '10')
                 for reply in res.get('comments') or []:
                     if max_reply and len(replies) >= max_reply:
@@ -181,9 +262,55 @@ class Data_Spider():
                 if res.get('has_more') != 1:
                     break
                 cursor = str(res.get('cursor', '0'))
+        except RiskStop:
+            raise
         except Exception as e:
             logger.warning(f'评论 {comment.get("cid")} 的回复爬取失败，已跳过: {e}')
         return replies
+
+    def spider_some_work_comments(self, auth, works: list, base_path: dict, max_comments: int = 0,
+                                   with_reply: bool = True, max_reply_per_comment: int = 0):
+        """
+        批量爬取多个作品的评论，每个作品一个 excel。
+        已完成的作品会记录下来，中断后再运行会跳过它们；正在爬的那个作品从断点继续。
+        """
+        ckpt = Checkpoint('comments_batch', make_key('batch', *works))
+        state = ckpt.load() or {'done': []}
+        state['failed'] = []  # 上次失败的，这次重新试一遍
+        for i, work_url in enumerate(works, 1):
+            if work_url in state['done'] or work_url in state['failed']:
+                continue
+            logger.info(f'===== 批量评论 {i}/{len(works)}：{work_url} =====')
+            try:
+                self.spider_work_comments(auth, work_url, base_path, max_comments,
+                                          with_reply, max_reply_per_comment)
+                state['done'].append(work_url)
+            except (RiskStop, KeyboardInterrupt):
+                raise
+            except Exception as e:
+                logger.error(f'作品 {work_url} 的评论爬取失败，已跳过: {e}')
+                state['failed'].append(work_url)
+            ckpt.save(state)
+        if state['failed']:
+            logger.warning(f'以下作品失败已跳过：{state["failed"]}')
+        ckpt.clear()
+
+
+def _friendly_exit(exc_type, exc, tb):
+    """风控停止 / 额度用完 / 手动中断时，给出清楚的提示，而不是一大段报错。"""
+    if issubclass(exc_type, DailyLimitReached):
+        logger.warning(f'\n⏸  {exc}')
+    elif issubclass(exc_type, RiskStop):
+        logger.error(f'\n⛔ {exc}')
+    elif issubclass(exc_type, KeyboardInterrupt):
+        logger.warning('\n⏸  已手动停止。进度已保存，下次运行会从断点继续。')
+    else:
+        sys.__excepthook__(exc_type, exc, tb)
+        return
+    logger.info(f'今日已请求 {today_count()} 次。已爬到的数据保存在 datas/excel_datas/（文件名带"_未完成"）。')
+
+
+sys.excepthook = _friendly_exit
 
 if __name__ == '__main__':
     """
@@ -194,7 +321,7 @@ if __name__ == '__main__':
     """
 
     # ======================================================================
-    # 使用说明：下面 5 个功能默认全部关闭（每行前面都有 "# "）。
+    # 使用说明：下面 6 个功能默认全部关闭（每行前面都有 "# "）。
     # 想用哪个，就把那一段代码行前面的 "# " 删掉（# 和它后面的一个空格都删）。
     #
     # 【缩进规则 —— 不遵守会报 IndentationError / SyntaxError】
@@ -209,6 +336,12 @@ if __name__ == '__main__':
     #      设置里关闭「智能引号」；更推荐用 VS Code / PyCharm。
     #   小技巧：VS Code / PyCharm 里选中多行，按 Cmd + / 可一键注释或取消注释，
     #   缩进会自动保持正确。
+    #
+    # 【防风控 & 断点续爬 —— 已自动开启，不用改代码】
+    #   - 所有请求自动限速（默认每次间隔 3~6 秒、每分钟 ≤10 次、每天 ≤2000 次），
+    #     触发风控会自动暂停 5/10/20 分钟后重试，仍不行就保存进度后安全停止。
+    #   - 中途停止（风控、额度用完、Ctrl+C、断网）后，再次运行同样的代码会从断点继续。
+    #   - 速度参数在 .env 里调整（DY_REQ_INTERVAL、DY_REQ_PER_MIN 等），见 .env.example。
     #
     # save_choice（保存方式）:
     #   'all'   保存所有信息（视频图片 + excel）
@@ -252,3 +385,11 @@ if __name__ == '__main__':
     #                                  max_comments=200,          # 最多爬多少条一级评论，0 = 全部
     #                                  with_reply=True,           # 是否爬楼中楼回复
     #                                  max_reply_per_comment=50)  # 每条评论最多爬多少回复，0 = 全部
+
+    ## 功能 6：批量爬取多个作品的评论（每个作品一个 excel；中断后再运行会跳过已完成的）
+    # works = [
+    #     'https://www.douyin.com/video/7445533736877264178',
+    #     'https://www.douyin.com/video/7227654252435361061',
+    # ]
+    # data_spider.spider_some_work_comments(auth, works, base_path,
+    #                                       max_comments=200, with_reply=True, max_reply_per_comment=50)

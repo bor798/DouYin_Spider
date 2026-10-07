@@ -32,6 +32,8 @@ import os
 import re
 import threading
 
+from utils import safe_guard as _safe_guard
+
 
 def _resolve_impersonate():
     """Pick the newest profile actually shipped by the installed curl_cffi.
@@ -95,6 +97,8 @@ def split_h2_cookie_fields(cookie_header):
 
 
 def request(method, url, **kwargs):
+    # 防风控：所有发往抖音数据接口的请求先过全局限速闸（见 utils/safe_guard.py）
+    _safe_guard.throttle(url)
     # Compatibility bridge for the many historical API call sites that pass
     # ``cookies=auth.cookie`` to this module.  CookieDict carries a private
     # owner back-reference, so those calls now use the same persistent Auth

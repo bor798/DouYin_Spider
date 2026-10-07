@@ -2769,3 +2769,8 @@ if __name__ == '__main__':
     # while True:
     #     print(DouyinAPI.diggLiveRoom(auth_, room_id, '10'))
     #     time.sleep(1)
+
+
+# 防风控：只读接口遇到风控自动退避重试（写操作不重试），见 utils/safe_guard.py
+from utils.safe_guard import install as _install_safe_guard
+_install_safe_guard(DouyinAPI)
