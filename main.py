@@ -1,11 +1,13 @@
 # coding=utf-8
 import json
 import os
+import random
+import time
 from loguru import logger
 
-from dy_apis.douyin_api import DouyinAPI
+from dy_apis.douyin_api import DouyinAPI, parse_aweme_id
 from utils.common_util import init
-from utils.data_util import handle_work_info, download_work, save_to_xlsx
+from utils.data_util import handle_work_info, download_work, save_to_xlsx, handle_comment_info, save_comments_to_xlsx
 
 
 def safe_download_work(work_info, path, save_choice):
@@ -117,6 +119,72 @@ class Data_Spider():
             file_path = os.path.abspath(os.path.join(base_path['excel'], f'{excel_name}.xlsx'))
             save_to_xlsx(work_info_list, file_path)
 
+    def spider_work_comments(self, auth, work_url: str, base_path: dict, max_comments: int = 0,
+                              with_reply: bool = True, max_reply_per_comment: int = 0,
+                              excel_name: str = '', sleep_range=(1.0, 2.5)):
+        """
+        爬取一个作品的评论（一级评论 + 楼中楼回复），保存到 excel
+        :param auth: 用户认证信息
+        :param work_url: 作品链接（/video/xxx、/note/xxx 或带 modal_id=xxx 的链接都行）
+        :param base_path: 保存路径
+        :param max_comments: 最多爬多少条一级评论，0 表示全部
+        :param with_reply: 是否爬取二级回复（楼中楼）
+        :param max_reply_per_comment: 每条一级评论最多爬多少条回复，0 表示全部
+        :param excel_name: excel 文件名，留空则用 "评论_作品id"
+        :param sleep_range: 每次请求之间随机等待的秒数，太快容易触发风控
+        :return: 整理后的评论列表
+        """
+        aweme_id, _ = parse_aweme_id(work_url)
+        excel_name = excel_name or f'评论_{aweme_id}'
+        rows = []
+        out_count = 0
+        cursor = '0'
+
+        def nap():
+            time.sleep(random.uniform(*sleep_range))
+
+        while True:
+            res = self.douyin_apis.get_work_out_comment(auth, work_url, cursor)
+            comments = res.get('comments') or []
+            if not comments:
+                break
+            for comment in comments:
+                if max_comments and out_count >= max_comments:
+                    break
+                out_count += 1
+                rows.append(handle_comment_info(comment, level=1))
+                reply_total = comment.get('reply_comment_total') or 0
+                if with_reply and reply_total > 0:
+                    rows.extend(self._spider_replies(auth, comment, max_reply_per_comment, nap))
+            logger.info(f'作品 {aweme_id}：已爬一级评论 {out_count} 条，共 {len(rows)} 条（含回复）')
+            if (max_comments and out_count >= max_comments) or res.get('has_more') != 1:
+                break
+            cursor = str(res.get('cursor', '0'))
+            nap()
+
+        file_path = os.path.abspath(os.path.join(base_path['excel'], f'{excel_name}.xlsx'))
+        save_comments_to_xlsx(rows, file_path)
+        return rows
+
+    def _spider_replies(self, auth, comment: dict, max_reply: int, nap):
+        """爬一条一级评论下的二级回复；单条失败只跳过，不中断整体。"""
+        replies = []
+        cursor = '0'
+        try:
+            while True:
+                nap()
+                res = self.douyin_apis.get_work_inner_comment(auth, comment, cursor, '10')
+                for reply in res.get('comments') or []:
+                    if max_reply and len(replies) >= max_reply:
+                        return replies
+                    replies.append(handle_comment_info(reply, level=2, parent_cid=comment.get('cid', '')))
+                if res.get('has_more') != 1:
+                    break
+                cursor = str(res.get('cursor', '0'))
+        except Exception as e:
+            logger.warning(f'评论 {comment.get("cid")} 的回复爬取失败，已跳过: {e}')
+        return replies
+
 if __name__ == '__main__':
     """
         此文件为爬虫的入口文件，可以直接运行
@@ -126,7 +194,7 @@ if __name__ == '__main__':
     """
 
     # ======================================================================
-    # 使用说明：下面 4 个功能默认全部关闭（每行前面都有 "# "）。
+    # 使用说明：下面 5 个功能默认全部关闭（每行前面都有 "# "）。
     # 想用哪个，就把那一段代码行前面的 "# " 删掉（# 和它后面的一个空格都删）。
     #
     # 【缩进规则 —— 不遵守会报 IndentationError / SyntaxError】
@@ -177,3 +245,10 @@ if __name__ == '__main__':
     # to_user_id = DouyinAPI.get_user_info(auth, user_url)['user']['uid']
     # conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(auth, to_user_id)
     # DouyinAPI.send_msg(auth, conversation_id, conversation_short_id, ticket, content)
+
+    ## 功能 5：爬取某个作品的评论（含楼中楼回复），保存到 datas/excel_datas/评论_作品id.xlsx
+    # work_url = 'https://www.douyin.com/video/7445533736877264178'
+    # data_spider.spider_work_comments(auth, work_url, base_path,
+    #                                  max_comments=200,          # 最多爬多少条一级评论，0 = 全部
+    #                                  with_reply=True,           # 是否爬楼中楼回复
+    #                                  max_reply_per_comment=50)  # 每条评论最多爬多少回复，0 = 全部

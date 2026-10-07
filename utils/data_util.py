@@ -203,3 +203,69 @@ def download_work(work_info, path, save_choice):
 def check_and_create_path(path):
     if not os.path.exists(path):
         os.makedirs(path)
+
+
+# ---------------------------------------------------------------------------
+# 评论
+# ---------------------------------------------------------------------------
+COMMENT_HEADERS = ['评论id', '层级', '所属一级评论id', '回复对象', '评论内容', '评论图片',
+                   '点赞数', '回复数', '评论时间', 'ip归属地', '作者是否点赞', '标签',
+                   '用户昵称', '用户id', '用户主页url', '头像url', '作品id', '作品url']
+
+
+def _first_url(obj):
+    try:
+        return (obj or {}).get('url_list', [''])[0]
+    except (IndexError, AttributeError):
+        return ''
+
+
+def handle_comment_info(comment, level=1, parent_cid=''):
+    """把接口返回的一条评论整理成扁平字典（一行 excel）。"""
+    user = comment.get('user') or {}
+    sec_uid = user.get('sec_uid', '')
+    create_time = comment.get('create_time') or 0  # 评论接口是秒级时间戳
+    images = [_first_url(img.get('origin_url') or img.get('medium_url'))
+              for img in (comment.get('image_list') or [])]
+    aweme_id = comment.get('aweme_id', '')
+    return {
+        'comment_id': comment.get('cid', ''),
+        'level': '一级' if level == 1 else '二级',
+        'parent_cid': parent_cid,
+        'reply_to': comment.get('reply_to_username', '') if level == 2 else '',
+        'text': comment.get('text', ''),
+        'images': images,
+        'digg_count': comment.get('digg_count', 0),
+        'reply_count': comment.get('reply_comment_total', 0) if level == 1 else '',
+        'create_time': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(create_time)) if create_time else '',
+        'ip_location': comment.get('ip_label', ''),
+        'author_digged': '是' if comment.get('is_author_digged') else '否',
+        'label': comment.get('label_text', ''),
+        'nickname': user.get('nickname', ''),
+        'user_id': user.get('uid', ''),
+        'user_url': f'https://www.douyin.com/user/{sec_uid}' if sec_uid else '',
+        'avatar': _first_url(user.get('avatar_thumb')),
+        'aweme_id': aweme_id,
+        'work_url': f'https://www.douyin.com/video/{aweme_id}' if aweme_id else '',
+    }
+
+
+def save_comments_to_xlsx(comments, file_path):
+    """comments: handle_comment_info 处理后的字典列表。一级评论后面紧跟它的二级回复。"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '评论'
+    ws.append(COMMENT_HEADERS)
+    for c in comments:
+        row = []
+        for v in c.values():
+            if isinstance(v, list):
+                v = '\n'.join(v)
+            row.append(norm_text(str(v)) if isinstance(v, str) else v)
+        ws.append(row)
+    widths = [22, 6, 22, 14, 60, 30, 8, 8, 20, 10, 10, 8, 16, 14, 40, 30, 22, 40]
+    for i, w in enumerate(widths):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(i + 1)].width = w
+    ws.freeze_panes = 'A2'
+    wb.save(file_path)
+    logger.info(f'评论保存至 {file_path}（共 {len(comments)} 条）')
