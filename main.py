@@ -125,37 +125,55 @@ if __name__ == '__main__':
         感谢star和follow
     """
 
+    # ======================================================================
+    # 使用说明：下面 4 个功能默认全部关闭（每行前面都有 "# "）。
+    # 想用哪个，就把那一段代码行前面的 "# " 删掉（# 和它后面的一个空格都删）。
+    #
+    # 【缩进规则 —— 不遵守会报 IndentationError / SyntaxError】
+    #   1. 取消注释后，每一行开头必须正好是 4 个空格，和下面的
+    #      data_spider = Data_Spider() 这一行左边对齐。
+    #   2. 只删 "# " 这两个字符，不要删前面的 4 个空格，也不要多删或多加空格。
+    #   3. 只用空格，不要用 Tab 键缩进（Tab 和空格混用也会报错）。
+    #   4. works = [ ... ] 这种跨多行的，里面那一行比上下多 4 个空格（共 8 个），保持原样即可。
+    #   5. 带 "##" 开头的中文说明行不用动，留着当注释。
+    #   6. 引号必须是英文引号 ' 或 "，不能是中文弯引号 ‘’ “”。
+    #      用 Mac「文本编辑」改时，先在菜单「格式」里选「制作纯文本」，并在
+    #      设置里关闭「智能引号」；更推荐用 VS Code / PyCharm。
+    #   小技巧：VS Code / PyCharm 里选中多行，按 Cmd + / 可一键注释或取消注释，
+    #   缩进会自动保持正确。
+    #
+    # save_choice（保存方式）:
+    #   'all'   保存所有信息（视频图片 + excel）
+    #   'media' 只下载视频和图片（'media-video' 只下视频，'media-image' 只下图片）
+    #   'excel' 只保存到 excel
+    # ======================================================================
+
     auth, base_path = init()
-
     data_spider = Data_Spider()
-    # save_choice: all: 保存所有的信息, media: 保存视频和图片（media-video只下载视频, media-image只下载图片，media都下载）, excel: 保存到excel
-    # save_choice 为 excel 或者 all 时，excel_name 不能为空
 
-
-    # # 1 爬取列表的所有作品信息 作品链接 如下所示 注意此url会过期！
+    ## 功能 1：爬取指定的几个作品（作品链接会过期，记得换成自己的）
     # works = [
     #     r'https://www.douyin.com/user/MS4wLjABAAAAv2Jr7Ngl7lQMjp4fw0AxtXkaHOgI_UL8aBJGGDSaU1g?from_tab_name=main&modal_id=7445533736877264178',
     # ]
     # data_spider.spider_some_work(auth, works, base_path, 'all', 'test')
-    #
-    # # 2 爬取用户的所有作品信息 用户链接 如下所示 注意此url会过期！
+
+    ## 功能 2：爬取某个用户的所有作品（用户链接换成自己的）
     # user_url = 'https://www.douyin.com/user/MS4wLjABAAAAULqT-SrJDT7RqeoxeGg1hB14Ia5UI9Pm66kzKmI1ITD2Fo3bUhqYePBaztkzj7U5?from_tab_name=main&relation=0&vid=7227654252435361061'
     # data_spider.spider_user_all_work(auth, user_url, base_path, 'all')
 
-    # 3 搜索指定关键词的作品
-    query = "榴莲"
-    require_num = 20  # 搜索的数量
-    sort_type = '0'  # 排序方式 0 综合排序, 1 最多点赞, 2 最新发布
-    publish_time = '0'  # 发布时间 0 不限, 1 一天内, 7 一周内, 180 半年内
-    filter_duration = ""  # 视频时长 空字符串 不限, 0-1 一分钟内, 1-5 1-5分钟内, 5-10000 5分钟以上
-    search_range = "0"  # 搜索范围 0 不限, 1 最近看过, 2 还未看过, 3 关注的人
-    content_type = "0"  # 内容形式 0 不限, 1 视频, 2 图文
-
+    ## 功能 3：搜索关键词的作品
+    # query = "榴莲"
+    # require_num = 20  # 搜索的数量
+    # sort_type = '0'  # 排序方式 0 综合排序, 1 最多点赞, 2 最新发布
+    # publish_time = '0'  # 发布时间 0 不限, 1 一天内, 7 一周内, 180 半年内
+    # filter_duration = ""  # 视频时长 空字符串 不限, 0-1 一分钟内, 1-5 1-5分钟内, 5-10000 5分钟以上
+    # search_range = "0"  # 搜索范围 0 不限, 1 最近看过, 2 还未看过, 3 关注的人
+    # content_type = "0"  # 内容形式 0 不限, 1 视频, 2 图文
     # data_spider.spider_some_search_work(auth, query, require_num, base_path, 'all', sort_type, publish_time, filter_duration, search_range, content_type)
 
-    # 4 私信：用户链接转 uid 后建对话发一条
-    user_url = 'https://www.douyin.com/user/MS4wLjABAAAAaB23ankxsw7PIgXnKxCcLC9iJIadZMQQpS-KWVO8Y306zOksK9cUvT5QdoOIcsS6?from_tab_name=live'
-    content = "在吗"
-    to_user_id = DouyinAPI.get_user_info(auth, user_url)['user']['uid']
-    conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(auth, to_user_id)
-    DouyinAPI.send_msg(auth, conversation_id, conversation_short_id, ticket, content)
+    ## 功能 4：给某个用户发私信（注意：会用你的账号真实发出消息！）
+    # user_url = 'https://www.douyin.com/user/MS4wLjABAAAAaB23ankxsw7PIgXnKxCcLC9iJIadZMQQpS-KWVO8Y306zOksK9cUvT5QdoOIcsS6?from_tab_name=live'
+    # content = "在吗"
+    # to_user_id = DouyinAPI.get_user_info(auth, user_url)['user']['uid']
+    # conversation_id, conversation_short_id, ticket = DouyinAPI.create_conversation(auth, to_user_id)
+    # DouyinAPI.send_msg(auth, conversation_id, conversation_short_id, ticket, content)
