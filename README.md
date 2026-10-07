@@ -120,6 +120,18 @@ python get_cookie.py
 
 不想用自动获取的话，按下面的方法手动配置即可。
 
+### 🤖接入 AI 助手（OpenClaw）/ 命令行调用
+
+```
+./dy.sh comments --url "<作品链接或 App 分享口令>" --max 100     # 爬评论
+./dy.sh user --url "<用户主页链接>"                               # 用户全部作品
+./dy.sh search --query 关键词 --num 20                           # 搜索作品
+./dy.sh status                                                   # 今日额度、未完成任务
+```
+支持直接粘贴 App 里复制的整段分享口令和 `v.douyin.com` 短链。结果除 Excel 外还会在 `datas/json_datas/` 生成精简 JSON，方便 AI 分析；stdout 最后一行是 JSON 结果。
+
+接入 OpenClaw：在项目目录运行 `./install_openclaw_skill.sh`，然后在 OpenClaw 新开对话，发链接说"帮我爬这个视频的评论并分析"即可。技能只开放读取功能，并要求 AI 遵守防风控规则。
+
 ### 🛡️防风控与断点续爬（默认开启）
 
 宁可慢，也要稳：
